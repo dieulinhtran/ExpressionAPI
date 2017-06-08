@@ -11,6 +11,6 @@ img, pts, pts_raw, Z, AU_DISFA, AU_FERA = pickle.load(open('./test_out.pkz','rb'
 img_raw = [imread(i) for i in img_files]
 
 f = 0
-img_out = make_hub(img_raw[f], pts_raw[f], AU_DISFA[f], img[f])
-
-imsave('out.png', img_out)
+for f in range(len(img_files)):
+    img_out = make_hub(img_raw[f], pts_raw[f], AU_DISFA[f], img[f])
+    imsave('out.png', img_out)
