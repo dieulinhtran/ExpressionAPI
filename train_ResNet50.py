@@ -2,6 +2,7 @@ import ExpressionAPI
 import argparse
 import os
 import pickle
+from tensorflow.python.client import device_lib
 
 if __name__=='__main__':
 

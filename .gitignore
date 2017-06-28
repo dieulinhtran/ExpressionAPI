@@ -3,4 +3,5 @@ tmp*
 build
 dist
 in_progress
-ExpressionAPI/models/*
+*.pyc
+ExpressionAPI/models/ResNet50_aug_1.1/Graph/

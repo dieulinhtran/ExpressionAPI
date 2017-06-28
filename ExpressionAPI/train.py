@@ -78,7 +78,7 @@ def train_model(args):
     datasets_batch_padding = [
         ('disfa', 10, -1),
         # ('pain', 10, -1),
-        ('fera', 10, -1),
+        # ('fera2015', 10, -1),
         # ('imdb_wiki', 10, -1),
     ]
 
@@ -139,7 +139,10 @@ def train_model(args):
             save_best_model(GEN_TE_na, args.log_dir),
             K.callbacks.ModelCheckpoint(
                 args.log_dir + '/model.h5', save_weights_only=True)
-            ]
+            ,
+            K.callbacks.TensorBoard(log_dir=args.log_dir + '/Graph',
+                                    histogram_freq=0, write_graph=True,
+                                    write_images=True)]
         )
 
     return model, pip

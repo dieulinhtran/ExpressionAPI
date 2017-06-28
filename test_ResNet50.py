@@ -5,7 +5,7 @@ import pickle
 
 if __name__=='__main__':
 
-    parser = argparse.ArgumentParser(description='Trest ResNet50 for facial feature extraction')
+    parser = argparse.ArgumentParser(description='Test ResNet50 for facial feature extraction')
 
     # input output
     parser.add_argument("-i","--input",   type=str, default='tests/test_images/S148_002/*.png')
