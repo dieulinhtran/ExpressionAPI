@@ -3,3 +3,4 @@ tmp*
 build
 dist
 in_progress
+ExpressionAPI/models/*
