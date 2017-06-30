@@ -16,20 +16,15 @@ from reverse_gradient import reverse_gradient
 DATA_DIR = '/vol/atlas/homes/dlt10/data/similarity_256_256'
 
 
-def mse(y_true, y_pred):
+def mse(y_true, y_pred, name='mse'):
     '''
     '''
     skip = tf.not_equal(y_true, -1)
     skip = tf.reduce_min(tf.to_int32(skip), 1)
     skip = tf.to_float(skip)
     cost = tf.reduce_mean(tf.square(y_true-y_pred), 1)
+    tf.summary.scalar(name, cost * skip)
     return cost * skip
-
-def domain(y_true, y_pred):
-    skip = tf.not_equal(y_true, -1)
-    skip = tf.reduce_min(tf.to_int32(skip), 1)
-    skip = tf.to_float(skip)
-    cost = tf.reduce_mean(tf.square(y_true-y_pred), 1)
 
 
 def train_model(args):
@@ -50,19 +45,15 @@ def train_model(args):
     def data_provider(list_dat, aug):
 
         out = []
-        for dat in list_dat:
+        for i, dat in enumerate(list_dat):
             gen = dat[0]
-            img = next(gen['img'])
-
             lab = next(gen['lab'])
             if lab.ndim == 3:
                 lab = lab.argmax(2)
-
             lab = np.int8(lab)
             out.append(-np.ones_like(lab))
 
         while True:
-            n_domains = len(list_dat)
             for i, dat in enumerate(list_dat):
                 for gen in dat:
                     lab_list = copy.copy(out)
@@ -82,6 +73,8 @@ def train_model(args):
                     img_pp = img_pp[:, 16:-16, 16:-16, :]
 
                     img_pp -= np.apply_over_axes(np.mean, img_pp, [1, 2])
+                    # add labels for domain classification
+                    lab_list.append(np.ones_like(lab) * i)
 
                     yield [img_pp], lab_list
 
@@ -115,34 +108,33 @@ def train_model(args):
     print("Y", len(Y))
 
     base_net = applications.resnet50.ResNet50(weights='imagenet')
-    base_net.summary()
-
     inp_0 = base_net.input
     base_net.layers.pop()
     base_net.outputs = [base_net.layers[-1].output]
     base_net.layers[-1].outbound_nodes = []
     Z = base_net.get_layer('flatten_1').output
-    # Z = base_net.get_layer('fc1000').output
     out, loss = [], []
-    for i, y in enumerate(Y):
-        print("y shape", y.shape)
-        net = layers.Dense(y.shape[1], name="Dense_{}".format(
-            datasets_batch_padding[i][0]))(Z)
-        out.append(net)
-        loss.append(mse)
-    #out.append()
-    print("i", i)
-    # sys.exit()
+
+    with tf.variable_scope('label_predictor'):
+        for i, y in enumerate(Y[:-1]):
+            dataset_name = datasets_batch_padding[i][0]
+            net = layers.Dense(y.shape[1], name="Dense_{}".format(
+                dataset_name))(Z)
+            out.append(net)
+            loss.append(mse(net, y, name='mse_{}'.format(dataset_name)))
+
     with tf.variable_scope('domain_predictor'):
-                    
         # Flip the gradient when backpropagating through this operation
-        feat = reverse_gradient(Z, self.l)
-        dp_fc0 = layers.Dense(100, activation='relu', name='dense_domain_1'
+        l = tf.placeholder(tf.float32, [])
+        feat = reverse_gradient(Z, l)
+        dp_fc0 = layers.Dense(100, activation='relu', name='dense_domain_relu',
                               kernel_initializer='glorot_normal')(feat)
-        dp_fc1 = layers.Dense(len(Y) - 1, activation='softmax',
+        logits = layers.Dense(len(Y) - 1, activation='linear',
                               kernel_initializer='glorot_normal',
-                              name='dense_domain_2')(dp_fc0)
-        domain_loss = K.categorical_crossentropy(dp_fc1, Y[-1])
+                              name='dense_domain_logit')(dp_fc0)
+        domain_pred = tf.nn.softmax(logits)
+        domain_loss = tf.nn.softmax_cross_entropy_with_logits(logits, Y[-1])
+        tf.summary.scalar('domain_loss', domain_loss)
         out.append(dp_fc1)
         loss.append(domain_loss)
 
