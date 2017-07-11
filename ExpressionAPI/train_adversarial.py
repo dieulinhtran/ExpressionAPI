@@ -178,6 +178,7 @@ class AdversarialExpression(object):
             # create placeholder according to output shape
             _, n_classes, n_outputs = y.shape
             y_ = tf.placeholder(tf.float32, [None, n_classes, n_outputs])
+            print(y_)
             self.y.append(y_)
             name = self.datasets[i][0]
             # skip = 0 if the labels are all set to -1
@@ -191,8 +192,12 @@ class AdversarialExpression(object):
             logits = layers.Dense(n_classes, name=dense_name)(self.Z)
             self.prediction_logits.append(logits)
             # use cross entropy for loss function 
-            cross_entropy = tf.nn.softmax_cross_entropy_with_logits(
-                logits=logits, labels=y_)
+            # condition on skip > 0
+            def mean_cross_entropy(): 
+                cross_entropy = tf.nn.softmax_cross_entropy_with_logits(
+                    logits=logits, labels=y_)
+                return tf.reduce_mean(cross_entropy) 
+            pred_loss = tf.cond(skip == 0., skip, mean_cross_entropy)
             pred_loss = skip * tf.reduce_mean(cross_entropy)
             pred_loss = tf.Print(pred_loss, [pred_loss], "pred_loss_{}".format(i))
             self.prediction_loss.append(pred_loss)
@@ -245,6 +250,8 @@ def train_adversarial(args):
     gen_tr_na  = face_datasets.gen_tr_na
     gen_te_na  = face_datasets.gen_te_na
     X, Y = next(gen_tr_na)
+    print(X[0].shape)
+    print([y.shape for y in Y])
 
     adv_expr = AdversarialExpression(args, Y, datasets=DATA, adversarial=False)
     with adv_expr.session as sess:
@@ -267,14 +274,17 @@ def train_adversarial(args):
             avg_cost = 0.
             for i in tqdm(range(steps_per_epoch)):
                 batch_x, batch_y = next(gen_tr_na)
+                print([y.shape for y in batch_y])
                 feed_dict = {
                     K.learning_phase(): 1,
                     adv_expr.x_in: batch_x[0],
                     adv_expr.learning_rate: 0.01,
-                    adv_expr.y[0]: batch_y[0],
-                    adv_expr.y[1]: batch_y[1],
+                    # adv_expr.y[0]: batch_y[0],
+                    # adv_expr.y[1]: batch_y[1],
                     # adv_expr.domain_labels: batch_y[2]
                 }
+                z = sess.run([adv_expr.Z], feed_dict=feed_dict) 
+                print(z[0].shape)
                 _, l = sess.run([adv_expr.optimizer, adv_expr.total_loss],
                                  feed_dict=feed_dict)
                 avg_cost += l/steps_per_epoch
