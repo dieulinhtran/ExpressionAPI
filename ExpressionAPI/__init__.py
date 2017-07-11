@@ -1,4 +1,5 @@
-from .train import train_model
+from . import reverse_gradient
+# from .train import train_model
 from .train_adversarial import train_adversarial
 from .test import test_model 
 from .extract_features import Feature_Extractor 

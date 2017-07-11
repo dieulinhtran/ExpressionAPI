@@ -11,7 +11,7 @@ from .callbacks import save_predictions, save_best_model
 
 import FaceImageGenerator as FID
 
-from reverse_gradient import reverse_gradient
+from .reverse_gradient import GradientReversal
 
 DATA_DIR = '/vol/atlas/homes/dlt10/data/similarity_256_256'
 
@@ -126,7 +126,7 @@ def train_model(args):
     with tf.variable_scope('domain_predictor'):
         # Flip the gradient when backpropagating through this operation
         l = tf.placeholder(tf.float32, [])
-        feat = reverse_gradient(Z, l)
+        feat = GradientReversal()(Z, l)
         dp_fc0 = layers.Dense(100, activation='relu', name='dense_domain_relu',
                               kernel_initializer='glorot_normal')(feat)
         logits = layers.Dense(len(Y) - 1, activation='linear',

@@ -27,4 +27,4 @@ if __name__=='__main__':
     os.makedirs(args.log_dir, exist_ok=True)
     pickle.dump(args,open(args.log_dir+'/args.pkl','wb'))
 
-    ExpressionAPI.train_model(args)
+    ExpressionAPI.train_adversarial(args)
