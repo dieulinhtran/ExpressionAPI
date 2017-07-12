@@ -176,30 +176,35 @@ class AdversarialExpression(object):
     def _predict_labels(self, Y):
         for i, y in enumerate(Y):
             # create placeholder according to output shape
-            _, n_classes, n_outputs = y.shape
-            y_ = tf.placeholder(tf.float32, [None, n_classes, n_outputs])
+            # _, n_classes, n_outputs = y.shape
+            # y_ = tf.placeholder(tf.float32, [None, n_classes, n_outputs])
+            _, n_classes = y.shape
+            y_ = tf.placeholder(tf.float32, [None, n_classes])
             print(y_)
             self.y.append(y_)
             name = self.datasets[i][0]
             # skip = 0 if the labels are all set to -1
-            skip = tf.not_equal(y, -1)
-            skip = tf.reduce_min(tf.to_int32(skip), 1)
+            skip = tf.not_equal(y_, -1)
+            # skip = tf.reduce_min(tf.to_int32(skip), 1)
+            # only works if the entire batch is coming from ONE dataset
+            skip = tf.reduce_min(tf.to_int32(skip))
             skip = tf.to_float(skip)
-            skip = tf.Print(skip, [skip], "skip")
             self.prediction_skips.append(skip)
             # creating logits 
             dense_name = "Dense_{}".format(name)
             logits = layers.Dense(n_classes, name=dense_name)(self.Z)
             self.prediction_logits.append(logits)
+            def mse():
+                return tf.reduce_mean(tf.square(y_ - logits))
+            '''
             # use cross entropy for loss function 
             # condition on skip > 0
             def mean_cross_entropy(): 
                 cross_entropy = tf.nn.softmax_cross_entropy_with_logits(
                     logits=logits, labels=y_)
                 return tf.reduce_mean(cross_entropy) 
-            pred_loss = tf.cond(skip == 0., skip, mean_cross_entropy)
-            pred_loss = skip * tf.reduce_mean(cross_entropy)
-            pred_loss = tf.Print(pred_loss, [pred_loss], "pred_loss_{}".format(i))
+            '''
+            pred_loss = tf.cond(skip > 0., mse, lambda: skip)
             self.prediction_loss.append(pred_loss)
             # tensorboard
             tf.summary.scalar('loss_{}'.format(name), pred_loss)
@@ -230,8 +235,10 @@ class AdversarialExpression(object):
                 self.learning_rate, 0.9).minimize(self.total_loss)
         else:
             self.total_loss = tf.add_n(self.prediction_loss)
-            self.optimizer = tf.train.MomentumOptimizer(
-                self.learning_rate, 0.9).minimize(self.total_loss)
+            # self.optimizer = tf.train.MomentumOptimizer(
+            #     self.learning_rate, 0.9).minimize(self.total_loss)
+            self.optimizer = tf.train.AdamOptimizer(
+                self.learning_rate).minimize(self.total_loss)
         # tensorboard
         tf.summary.scalar('loss', self.total_loss)
 
@@ -246,12 +253,10 @@ def train_adversarial(args):
         # ('imdb_wiki', 10, -1),
     ]
     face_datasets = FacialExpressionDatasets(
-        args, datasets=DATASETS, one_hot=True)
+        args, datasets=DATASETS, one_hot=False)
     gen_tr_na  = face_datasets.gen_tr_na
     gen_te_na  = face_datasets.gen_te_na
     X, Y = next(gen_tr_na)
-    print(X[0].shape)
-    print([y.shape for y in Y])
 
     adv_expr = AdversarialExpression(args, Y, datasets=DATA, adversarial=False)
     with adv_expr.session as sess:
@@ -274,17 +279,14 @@ def train_adversarial(args):
             avg_cost = 0.
             for i in tqdm(range(steps_per_epoch)):
                 batch_x, batch_y = next(gen_tr_na)
-                print([y.shape for y in batch_y])
                 feed_dict = {
                     K.learning_phase(): 1,
                     adv_expr.x_in: batch_x[0],
                     adv_expr.learning_rate: 0.01,
-                    # adv_expr.y[0]: batch_y[0],
-                    # adv_expr.y[1]: batch_y[1],
+                    adv_expr.y[0]: batch_y[0],
+                    adv_expr.y[1]: batch_y[1],
                     # adv_expr.domain_labels: batch_y[2]
                 }
-                z = sess.run([adv_expr.Z], feed_dict=feed_dict) 
-                print(z[0].shape)
                 _, l = sess.run([adv_expr.optimizer, adv_expr.total_loss],
                                  feed_dict=feed_dict)
                 avg_cost += l/steps_per_epoch
