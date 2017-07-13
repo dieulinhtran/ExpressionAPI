@@ -12,6 +12,7 @@ from tensorflow.contrib.keras import backend as K
 from tensorflow.contrib.keras import applications, layers
 
 from .callbacks import save_predictions, save_best_model
+from .save_predictions import save_predictions
 
 import FaceImageGenerator as FID
 
@@ -148,9 +149,9 @@ class AdversarialExpression(object):
         self.datasets = datasets
         self.prediction_loss = []
         self.domain_loss = []
-        self.prediction_logits = []
         self.prediction_skips = []
-        self.y = []
+        self.Y_pred = []
+        self.Y_true = []
         self._build_graph(Y)
 
 
@@ -181,7 +182,7 @@ class AdversarialExpression(object):
             _, n_classes = y.shape
             y_ = tf.placeholder(tf.float32, [None, n_classes])
             print(y_)
-            self.y.append(y_)
+            self.Y_true.append(y_)
             name = self.datasets[i][0]
             # skip = 0 if the labels are all set to -1
             skip = tf.not_equal(y_, -1)
@@ -193,7 +194,7 @@ class AdversarialExpression(object):
             # creating logits 
             dense_name = "Dense_{}".format(name)
             logits = layers.Dense(n_classes, name=dense_name)(self.Z)
-            self.prediction_logits.append(logits)
+            self.Y_pred.append(logits)
             def mse():
                 return tf.reduce_mean(tf.square(y_ - logits))
             '''
@@ -242,6 +243,12 @@ class AdversarialExpression(object):
         # tensorboard
         tf.summary.scalar('loss', self.total_loss)
 
+    def predict(self, X):
+        session = K.session()
+        return session.run(
+            self.Y_pred,
+            feed_dict={K.learning_phase(): 0, self.x_in: X})
+
 
 def train_adversarial(args):
     # get data
@@ -257,15 +264,18 @@ def train_adversarial(args):
     gen_tr_na  = face_datasets.gen_tr_na
     gen_te_na  = face_datasets.gen_te_na
     X, Y = next(gen_tr_na)
+    predictions_tr = save_predictions(gen_tr_na, args.log_dir+'/TR_') 
+    predictions_te = save_predictions(gen_te_na, args.log_dir+'/TE_')
 
     adv_expr = AdversarialExpression(args, Y, datasets=DATA, adversarial=False)
     with adv_expr.session as sess:
         init = tf.global_variables_initializer()
         sess.run(init)
         steps_per_epoch = floor(face_datasets.n_train_examples/args.batch_size)
-        preds = zip(adv_expr.prediction_logits,
+        '''
+        preds = zip(adv_expr.Y_pred,
                     adv_expr.prediction_skips,
-                    adv_expr.y)
+                    adv_expr.Y_true)
         acc_list = []
         for pred, skip, labels in preds:
             correct_prediction = tf.equal(
@@ -274,6 +284,7 @@ def train_adversarial(args):
             acc_list.append(acc)
         accuracy = tf.add_n(acc_list)
 
+        '''
         for epoch in range(args.epochs):
             print("Epoch {}/{}".format(epoch + 1, args.epochs))
             avg_cost = 0.
@@ -283,14 +294,17 @@ def train_adversarial(args):
                     K.learning_phase(): 1,
                     adv_expr.x_in: batch_x[0],
                     adv_expr.learning_rate: 0.01,
-                    adv_expr.y[0]: batch_y[0],
-                    adv_expr.y[1]: batch_y[1],
+                    adv_expr.Y_true[0]: batch_y[0],
+                    adv_expr.Y_true[1]: batch_y[1]
                     # adv_expr.domain_labels: batch_y[2]
                 }
                 _, l = sess.run([adv_expr.optimizer, adv_expr.total_loss],
                                  feed_dict=feed_dict)
                 avg_cost += l/steps_per_epoch
+
             print("avg_cost", avg_cost)
+            predictions_tr.on_epoch_end(epoch)
+            predictions_te.on_epoch_end(epoch)
             '''
             print("Loss (train): {:.04f} \t Accuracy (test):  {:.04f}".format(
                 avg_cost, accuracy.eval({adv_expr.x_in: test_x,

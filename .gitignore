@@ -7,3 +7,6 @@ in_progress
 ExpressionAPI/models/ResNet50_aug_1.1/Graph/
 .idea
 *.swp
+*.swo
+ExpressionAPI/models/*
+*.pkl
