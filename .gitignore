@@ -4,4 +4,5 @@ build
 dist
 in_progress
 *.pyc
-ExpressionAPI/models/ResNet50_aug_1.1/Graph/
+ExpressionAPI/models/*
+ExpressionAPI/.ipynb_checkpoints/
