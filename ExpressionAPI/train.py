@@ -1,87 +1,103 @@
+import os
+import argparse
+import pickle
 import copy
 import numpy as np
-import os
 import sys
 
+import tensorflow.contrib.keras as keras
 import tensorflow as tf
-import tensorflow.contrib.keras as K
-from tensorflow.contrib.keras import applications, layers
 
+from tensorflow.contrib.keras import applications
+from tensorflow.contrib.keras import layers
 from .callbacks import save_predictions, save_best_model
-
+from .gradient_reversal import GradientReversal
 import FaceImageGenerator as FID
 
-from .reverse_gradient import GradientReversal
-
-DATA_DIR = '/vol/atlas/homes/dlt10/data/similarity_256_256'
+DATA_DIR = '/vol/hmi/projects/linh/data/similarity_256_256'
 
 
-def mse(y_true, y_pred, name='mse'):
+def mse(y_true, y_pred):
     '''
     '''
     skip = tf.not_equal(y_true, -1)
-    skip = tf.reduce_min(tf.to_int32(skip), 1)
+    skip = tf.reduce_min(tf.to_int32(skip),1)
     skip = tf.to_float(skip)
-    cost = tf.reduce_mean(tf.square(y_true-y_pred), 1)
-    tf.summary.scalar(name, cost * skip)
+    cost = tf.reduce_mean(tf.square(y_true-y_pred),1)
     return cost * skip
+
+
+def binary_crossentropy(y_true, y_pred):
+    offset = 1e-7
+    y_pred_ = tf.clip_by_value(y_pred, offset, 1 - offset)
+    cost = - tf.reduce_sum(
+        y_true * tf.log(y_pred_) + (1 - y_true) * tf.log(1 - y_pred_), 1)
+    return cost 
 
 
 def train_model(args):
 
     pip = FID.image_pipeline.FACE_pipeline(
-        histogram_normalization=args.normalization,
-        rotation_range=args.rotate,
-        width_shift_range=args.transform,
-        height_shift_range=args.transform,
-        gaussian_range=args.gaussian_range,
-        zoom_range=args.zoom,
-        random_flip=True,
-        allignment_type='similarity',
-        grayscale=False,
-        output_size=[256, 256],
-        face_size=[224])
+            histogram_normalization = args.normalization,
+            rotation_range = args.rotate,
+            width_shift_range = args.transform,
+            height_shift_range = args.transform,
+            gaussian_range = args.gaussian_range,
+            zoom_range = args.zoom,
+            random_flip = True,
+            allignment_type = 'similarity',
+            grayscale = False,
+            output_size = [256, 256],
+            face_size = [224],
+            )
 
     def data_provider(list_dat, aug):
 
         out = []
-        for i, dat in enumerate(list_dat):
+        for dat in list_dat:
             gen = dat[0]
+            img = next(gen['img'])
+
             lab = next(gen['lab'])
-            if lab.ndim == 3:
+            if lab.ndim==3:
                 lab = lab.argmax(2)
+
             lab = np.int8(lab)
+
             out.append(-np.ones_like(lab))
+        n_domains = len(list_dat)
+
 
         while True:
-            for i, dat in enumerate(list_dat):
+            for i, dat  in enumerate(list_dat):
                 for gen in dat:
                     lab_list = copy.copy(out)
 
                     img = next(gen['img'])
                     lab = next(gen['lab'])
 
-                    if lab.ndim == 3:
-                        lab = lab.argmax(2)
+                    if lab.ndim==3:lab = lab.argmax(2)
 
                     lab_list[i] = lab
 
-                    img_pp, _, _ = pip.batch_transform(
+                    img_pp, _, _  = pip.batch_transform(
                         img, preprocessing=True, augmentation=aug)
 
                     # crop the center of the image to size [244 244]
-                    img_pp = img_pp[:, 16:-16, 16:-16, :]
+                    img_pp = img_pp[:,16:-16,16:-16,:]
 
-                    img_pp -= np.apply_over_axes(np.mean, img_pp, [1, 2])
+                    img_pp -= np.apply_over_axes(np.mean, img_pp, [1,2])
                     # add labels for domain classification
-                    lab_list.append(np.ones_like(lab) * i)
+                    lab_domain = np.ones((lab.shape[0], n_domains))
+                    lab_domain[:, i] = 1.
+                    lab_list.append(lab_domain)
 
                     yield [img_pp], lab_list
 
     datasets_batch_padding = [
-        ('disfa', 10, -1),
+        ('disfa', args.batch, -1),
         # ('pain', 10, -1),
-        ('fera2015', 10, -1),
+        ('fera2015', args.batch, -1),
         # ('imdb_wiki', 10, -1),
     ]
 
@@ -99,13 +115,11 @@ def train_model(args):
     else:
         raise
 
-    GEN_TR_a = data_provider(TR, True)
+    GEN_TR_a  = data_provider(TR, True)
     GEN_TE_na = data_provider(TE, False)
     GEN_TR_na = data_provider(TR, False)
 
     X, Y = next(GEN_TR_a)
-    print("X", len(X))
-    print("Y", len(Y))
 
     base_net = applications.resnet50.ResNet50(weights='imagenet')
     inp_0 = base_net.input
@@ -118,57 +132,53 @@ def train_model(args):
     with tf.variable_scope('label_predictor'):
         for i, y in enumerate(Y[:-1]):
             dataset_name = datasets_batch_padding[i][0]
-            net = layers.Dense(y.shape[1], name="Dense_{}".format(
+            net = layers.Dense(y.shape[1], name="dense_{}".format(
                 dataset_name))(Z)
             out.append(net)
-            loss.append(mse(net, y, name='mse_{}'.format(dataset_name)))
+            loss.append(mse)
 
     with tf.variable_scope('domain_predictor'):
         # Flip the gradient when backpropagating through this operation
-        l = tf.placeholder(tf.float32, [])
-        feat = GradientReversal()(Z, l)
+        grl = GradientReversal(1.0)
+        feat = grl(Z)
         dp_fc0 = layers.Dense(100, activation='relu', name='dense_domain_relu',
                               kernel_initializer='glorot_normal')(feat)
         logits = layers.Dense(len(Y) - 1, activation='linear',
                               kernel_initializer='glorot_normal',
                               name='dense_domain_logit')(dp_fc0)
-        domain_pred = tf.nn.softmax(logits)
-        domain_loss = tf.nn.softmax_cross_entropy_with_logits(logits, Y[-1])
-        tf.summary.scalar('domain_loss', domain_loss)
-        out.append(dp_fc1)
-        loss.append(domain_loss)
+        domain_pred = layers.Activation(
+            'softmax', name="softmax_domain")(logits)
+        out.append(domain_pred)
+        loss.append(binary_crossentropy)
 
-    model = K.models.Model([inp_0], out)
+    model = keras.models.Model([inp_0], out)
     model.summary()
-
     model.compile(
-        optimizer=K.optimizers.Adadelta(
-            lr=1.,
-            rho=0.95,
-            epsilon=1e-08,
-            decay=1e-5,
+        optimizer=keras.optimizers.Adadelta(
+            lr = 0.1,
+            rho = 0.95, 
+            epsilon = 1e-08, 
+            decay = 1e-4,
         ),
         loss=loss,
-        metrics=[mse]
+        # metrics=[mse]
     )
 
     model.fit_generator(
-        generator=GEN_TR_a,
-        steps_per_epoch=2000,
-        epochs=args.epochs,
-        max_q_size=100,
-        validation_data=GEN_TE_na,
-        validation_steps=100,
+        generator = GEN_TR_na, 
+        steps_per_epoch = args.steps_per_epoch,
+        epochs = args.epochs, 
+        max_queue_size = 100,
+        validation_data = GEN_TE_na,
+        validation_steps = 100,
         callbacks=[
-            save_predictions(GEN_TR_na, args.log_dir+'/TR_'),
-            save_predictions(GEN_TE_na, args.log_dir+'/TE_'),
-            save_best_model(GEN_TE_na, args.log_dir),
-            K.callbacks.ModelCheckpoint(
-                args.log_dir + '/model.h5', save_weights_only=True)
-            ,
-            K.callbacks.TensorBoard(log_dir=args.log_dir + '/Graph',
-                                    histogram_freq=0, write_graph=True,
-                                    write_images=True)]
-        )
+            # save_predictions(GEN_TR_na, args.log_dir+'/TR_'),
+            # save_predictions(GEN_TE_na, args.log_dir+'/TE_'),
+            # save_best_model(GEN_TE_na,  args.log_dir),
+            # keras.callbacks.ModelCheckpoint(
+            #     args.log_dir+'/model.h5',save_weights_only=True),
+            keras.callbacks.TensorBoard(log_dir=args.log_dir + '/Graph',
+                                        write_graph=True)]
+            )
 
     return model, pip

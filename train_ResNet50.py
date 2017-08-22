@@ -15,16 +15,17 @@ if __name__=='__main__':
         default='./ExpressionAPI/models/ResNet50_aug_1.1')
 
     # Augmentation
-    parser.add_argument("-r", "--rotate", type=float, default=0)
+    parser.add_argument("-r", "--rotate", type=float, default=15)
     parser.add_argument("-e", "--epochs", type=int, default=500)
+    parser.add_argument("-s", "--steps_per_epoch", type=int, default=2000)
     parser.add_argument("-g", "--gaussian_range", type=float, default=2)
     parser.add_argument("-n", "--normalization", type=int, default=0)
-    parser.add_argument("-t", "--transform", type=float, default=0)
-    parser.add_argument("-z", "--zoom", type=float, default=0)
-    parser.add_argument("-b", "--batch_size", type=int, default=128) 
+    parser.add_argument("-t", "--transform", type=float, default=0.05)
+    parser.add_argument("-z", "--zoom", type=float, default=0.01)
+    parser.add_argument("-b", "--batch", type=int, default=10) 
 
     args = parser.parse_args()
     os.makedirs(args.log_dir, exist_ok=True)
     pickle.dump(args,open(args.log_dir+'/args.pkl','wb'))
 
-    ExpressionAPI.train_adversarial(args)
+    ExpressionAPI.train_model(args)
