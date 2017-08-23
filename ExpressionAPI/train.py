@@ -28,12 +28,90 @@ def mse(y_true, y_pred):
     return cost * skip
 
 
-def binary_crossentropy(y_true, y_pred):
-    offset = 1e-7
-    y_pred_ = tf.clip_by_value(y_pred, offset, 1 - offset)
-    cost = - tf.reduce_sum(
-        y_true * tf.log(y_pred_) + (1 - y_true) * tf.log(1 - y_pred_), 1)
-    return cost 
+def Resnet50DomainAdaptation(X, Y, weights='imagenet', dataset_names=[]):
+    base_net = applications.resnet50.ResNet50(weights=weights)
+    inp_0 = base_net.input
+    base_net.layers.pop()
+    base_net.outputs = [base_net.layers[-1].output]
+    base_net.layers[-1].outbound_nodes = []
+    Z = base_net.get_layer('flatten_1').output
+    out, loss = [], []
+
+    # prediction loss
+    for i, y in enumerate(Y[:-1]):
+    # for i, y in enumerate(Y):
+        if dataset_names:
+            dataset_name = dataset_names[i]
+        else:
+            dataset_name = i
+        net = layers.Dense(y.shape[1], name="dense_{}".format(
+            dataset_name))(Z)
+        out.append(net)
+
+    # domain loss
+    # Flip the gradient when backpropagating through this operation
+    grl = GradientReversal(1.0)
+    feat = grl(Z)
+    dp_fc0 = layers.Dense(100, activation='relu', name='dense_domain_relu',
+                          kernel_initializer='glorot_normal')(feat)
+    domain_logits = layers.Dense(len(Y) - 1, activation='linear',
+                          kernel_initializer='glorot_normal',
+                          name='dense_domain_logit')(dp_fc0)
+    out.append(domain_logits)
+
+    # initialize model
+    model = keras.models.Model(inp_0, out)
+    return model
+
+
+def data_provider(list_dat, aug, pip):
+
+    out = []
+    for dat in list_dat:
+        gen = dat[0]
+        img = next(gen['img'])
+
+        lab = next(gen['lab'])
+        if lab.ndim==3:
+            lab = lab.argmax(2)
+
+        lab = np.int8(lab)
+
+        out.append(-np.ones_like(lab))
+    n_domains = len(list_dat)
+
+
+    while True:
+        for i, dat  in enumerate(list_dat):
+            for gen in dat:
+                lab_list = copy.copy(out)
+
+                img = next(gen['img'])
+                lab = next(gen['lab'])
+
+                if lab.ndim==3:lab = lab.argmax(2)
+
+                lab_list[i] = lab
+
+                img_pp, _, _  = pip.batch_transform(
+                    img, preprocessing=True, augmentation=aug)
+
+                # crop the center of the image to size [244 244]
+                img_pp = img_pp[:,16:-16,16:-16,:]
+
+                img_pp -= np.apply_over_axes(np.mean, img_pp, [1,2])
+                # add labels for domain classification
+                
+                lab_domain = np.ones((lab.shape[0], n_domains))
+                lab_domain[:, i] = 1.
+                lab_list.append(lab_domain)
+                
+                yield img_pp, lab_list
+
+
+def trange(*args, **kwargs):
+    """A shortcut for writing tqdm(range)"""
+    return tqdm(range(*args), **kwargs)
 
 
 def train_model(args):
@@ -51,50 +129,6 @@ def train_model(args):
             output_size = [256, 256],
             face_size = [224],
             )
-
-    def data_provider(list_dat, aug):
-
-        out = []
-        for dat in list_dat:
-            gen = dat[0]
-            img = next(gen['img'])
-
-            lab = next(gen['lab'])
-            if lab.ndim==3:
-                lab = lab.argmax(2)
-
-            lab = np.int8(lab)
-
-            out.append(-np.ones_like(lab))
-        n_domains = len(list_dat)
-
-
-        while True:
-            for i, dat  in enumerate(list_dat):
-                for gen in dat:
-                    lab_list = copy.copy(out)
-
-                    img = next(gen['img'])
-                    lab = next(gen['lab'])
-
-                    if lab.ndim==3:lab = lab.argmax(2)
-
-                    lab_list[i] = lab
-
-                    img_pp, _, _  = pip.batch_transform(
-                        img, preprocessing=True, augmentation=aug)
-
-                    # crop the center of the image to size [244 244]
-                    img_pp = img_pp[:,16:-16,16:-16,:]
-
-                    img_pp -= np.apply_over_axes(np.mean, img_pp, [1,2])
-                    # add labels for domain classification
-                    
-                    lab_domain = np.ones((lab.shape[0], n_domains))
-                    lab_domain[:, i] = 1.
-                    lab_list.append(lab_domain)
-                    
-                    yield img_pp, lab_list
 
     datasets_batch_padding = [
         ('disfa', args.batch, -1),
@@ -117,40 +151,14 @@ def train_model(args):
     else:
         raise
 
-    GEN_TR_a  = data_provider(TR, True)
-    GEN_TE_na = data_provider(TE, False)
-    GEN_TR_na = data_provider(TR, False)
-
-    X, Y = next(GEN_TR_a)
-
-    base_net = applications.resnet50.ResNet50(weights='imagenet')
-    inp_0 = base_net.input
-    base_net.layers.pop()
-    base_net.outputs = [base_net.layers[-1].output]
-    base_net.layers[-1].outbound_nodes = []
-    Z = base_net.get_layer('flatten_1').output
-    out, loss = [], []
-
-    # prediction loss
-    for i, y in enumerate(Y[:-1]):
-    # for i, y in enumerate(Y):
-        dataset_name = datasets_batch_padding[i][0]
-        net = layers.Dense(y.shape[1], name="dense_{}".format(
-            dataset_name))(Z)
-        out.append(net)
-    # domain loss
-    # Flip the gradient when backpropagating through this operation
-    grl = GradientReversal(1.0)
-    feat = grl(Z)
-    dp_fc0 = layers.Dense(100, activation='relu', name='dense_domain_relu',
-                          kernel_initializer='glorot_normal')(feat)
-    domain_logits = layers.Dense(len(Y) - 1, activation='linear',
-                          kernel_initializer='glorot_normal',
-                          name='dense_domain_logit')(dp_fc0)
-    out.append(domain_logits)
+    GEN_TR_a  = data_provider(TR, True, pip)
+    GEN_TE_na = data_provider(TE, False, pip)
+    GEN_TR_na = data_provider(TR, False, pip)
 
     # initialize model
-    model = keras.models.Model(inp_0, out)
+    X, Y = next(GEN_TR_a)
+    dataset_names = [d[0] for d in datasets_batch_padding]
+    model = Resnet50DomainAdaptation(X, Y, dataset_names=dataset_names)
     model.summary()
 
     # define loss and optimizer
@@ -176,7 +184,7 @@ def train_model(args):
 
     # training 
     for e in range(args.epochs):
-        for s in tqdm(range(args.steps_per_epoch), desc="Epoch {}".format(e)):
+        for s in trange(args.steps_per_epoch, desc="Epoch {}".format(e)):
             X_batch, Y_batch = next(GEN_TR_na)            
             feed_dict = {
                 x_in: X_batch,
