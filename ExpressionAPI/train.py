@@ -94,8 +94,7 @@ def train_model(args):
                     lab_domain[:, i] = 1.
                     lab_list.append(lab_domain)
                     
-
-                    yield [img_pp], lab_list
+                    yield img_pp, lab_list
 
     datasets_batch_padding = [
         ('disfa', args.batch, -1),
@@ -123,8 +122,6 @@ def train_model(args):
     GEN_TR_na = data_provider(TR, False)
 
     X, Y = next(GEN_TR_a)
-    print([x.shape for x in X])
-    print([y.shape for y in Y])
 
     base_net = applications.resnet50.ResNet50(weights='imagenet')
     inp_0 = base_net.input
@@ -134,15 +131,14 @@ def train_model(args):
     Z = base_net.get_layer('flatten_1').output
     out, loss = [], []
 
-
+    # prediction loss
     for i, y in enumerate(Y[:-1]):
     # for i, y in enumerate(Y):
         dataset_name = datasets_batch_padding[i][0]
         net = layers.Dense(y.shape[1], name="dense_{}".format(
             dataset_name))(Z)
         out.append(net)
-        loss.append(mse)
-
+    # domain loss
     # Flip the gradient when backpropagating through this operation
     grl = GradientReversal(1.0)
     feat = grl(Z)
@@ -152,52 +148,43 @@ def train_model(args):
                           kernel_initializer='glorot_normal',
                           name='dense_domain_logit')(dp_fc0)
     out.append(domain_logits)
-    loss.append(binary_crossentropy)
 
+    # initialize model
     model = keras.models.Model(inp_0, out)
     model.summary()
-    '''
-    model.compile(
-        optimizer=keras.optimizers.Adadelta(
-            lr = 0.1,
-            rho = 0.95, 
-            epsilon = 1e-08, 
-            decay = 1e-4,
-        ),
-        loss=loss,
-        # metrics=[mse]
-    )
-    '''
-    sess = tf.Session()
-    K.set_session(sess)
-    
-    x_batch = tf.placeholder(tf.float32, [args.batch, 224, 224, 3])
-    y_batch = [
-        tf.placeholder(tf.float32, [args.batch, 12]),
-        tf.placeholder(tf.float32, [args.batch, 5]),
-        tf.placeholder(tf.float32, [args.batch, 2])]
-    y_predictions = model(x_batch)
-    loss_disfa = mse(y_batch[0], y_predictions[0])
-    loss_fera = mse(y_batch[1], y_predictions[1])
-    loss_domain = tf.nn.softmax_cross_entropy_with_logits(
-        logits=y_predictions[2], labels=y_batch[2])
-    loss = tf.reduce_mean(loss_disfa + loss_fera + loss_domain)
-    
+
+    # define loss and optimizer
+    n_domains = len(Y) - 1
+    x_in = tf.placeholder(tf.float32, list(X.shape))
+    y_predictions = [tf.placeholder(
+        tf.float32, [args.batch, y.shape[1]]) for y in Y[:-1]]
+    y_domain = tf.placeholder(tf.float32, [args.batch, Y[-1].shape[1]])
+    y_predictions = model(x_in)
+    prediction_losses = [mse(y_predictions[i], y_predictions[i])
+                         for i in range(n_domains)]
+    domain_loss = tf.nn.softmax_cross_entropy_with_logits(
+        logits=y_predictions[-1], labels=y_domain)
+    loss = tf.reduce_mean(tf.add_n(prediction_losses) + domain_loss)
     lr = tf.placeholder(tf.float32, shape=(), name="learning_rate")
     optimizer = tf.train.AdamOptimizer(learning_rate=lr).minimize(loss)
+
+    # initialize variables and session
     init = tf.global_variables_initializer()
+    sess = tf.Session()
+    K.set_session(sess)
     sess.run(init)
-    for e in tqdm(range(args.epochs)):
-        for s in tqdm(range(args.steps_per_epoch)):
+
+    # training 
+    for e in range(args.epochs):
+        for s in tqdm(range(args.steps_per_epoch), desc="Epoch {}".format(e)):
             X_batch, Y_batch = next(GEN_TR_na)            
             feed_dict = {
-                x_batch: X_batch[0],
-                y_batch[0]: Y_batch[0],
-                y_batch[1]: Y_batch[1],
-                y_batch[2]: Y_batch[2],
+                x_in: X_batch,
                 K.learning_phase(): 1,
-                lr: 1e-3
-            }
+                lr: 1e-3,
+                y_domain: Y_batch[-1]}
+            feed_dict.update(
+                {y_predictions[i]: Y_batch[i] for i in range(n_domains)})
             _, l = sess.run([optimizer, loss], feed_dict)
     
     sys.exit()
