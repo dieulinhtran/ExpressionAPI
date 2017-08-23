@@ -4,12 +4,13 @@ import pickle
 import copy
 import numpy as np
 import sys
+from tqdm import tqdm
 
-import tensorflow.contrib.keras as keras
 import tensorflow as tf
+import tensorflow.contrib.keras as keras
+from tensorflow.contrib.keras import applications, layers
+from tensorflow.contrib.keras import backend as K
 
-from tensorflow.contrib.keras import applications
-from tensorflow.contrib.keras import layers
 from .callbacks import save_predictions, save_best_model
 from .gradient_reversal import GradientReversal
 import FaceImageGenerator as FID
@@ -88,9 +89,11 @@ def train_model(args):
 
                     img_pp -= np.apply_over_axes(np.mean, img_pp, [1,2])
                     # add labels for domain classification
+                    
                     lab_domain = np.ones((lab.shape[0], n_domains))
                     lab_domain[:, i] = 1.
                     lab_list.append(lab_domain)
+                    
 
                     yield [img_pp], lab_list
 
@@ -120,6 +123,8 @@ def train_model(args):
     GEN_TR_na = data_provider(TR, False)
 
     X, Y = next(GEN_TR_a)
+    print([x.shape for x in X])
+    print([y.shape for y in Y])
 
     base_net = applications.resnet50.ResNet50(weights='imagenet')
     inp_0 = base_net.input
@@ -129,30 +134,29 @@ def train_model(args):
     Z = base_net.get_layer('flatten_1').output
     out, loss = [], []
 
-    with tf.variable_scope('label_predictor'):
-        for i, y in enumerate(Y[:-1]):
-            dataset_name = datasets_batch_padding[i][0]
-            net = layers.Dense(y.shape[1], name="dense_{}".format(
-                dataset_name))(Z)
-            out.append(net)
-            loss.append(mse)
 
-    with tf.variable_scope('domain_predictor'):
-        # Flip the gradient when backpropagating through this operation
-        grl = GradientReversal(1.0)
-        feat = grl(Z)
-        dp_fc0 = layers.Dense(100, activation='relu', name='dense_domain_relu',
-                              kernel_initializer='glorot_normal')(feat)
-        logits = layers.Dense(len(Y) - 1, activation='linear',
-                              kernel_initializer='glorot_normal',
-                              name='dense_domain_logit')(dp_fc0)
-        domain_pred = layers.Activation(
-            'softmax', name="softmax_domain")(logits)
-        out.append(domain_pred)
-        loss.append(binary_crossentropy)
+    for i, y in enumerate(Y[:-1]):
+    # for i, y in enumerate(Y):
+        dataset_name = datasets_batch_padding[i][0]
+        net = layers.Dense(y.shape[1], name="dense_{}".format(
+            dataset_name))(Z)
+        out.append(net)
+        loss.append(mse)
 
-    model = keras.models.Model([inp_0], out)
+    # Flip the gradient when backpropagating through this operation
+    grl = GradientReversal(1.0)
+    feat = grl(Z)
+    dp_fc0 = layers.Dense(100, activation='relu', name='dense_domain_relu',
+                          kernel_initializer='glorot_normal')(feat)
+    domain_logits = layers.Dense(len(Y) - 1, activation='linear',
+                          kernel_initializer='glorot_normal',
+                          name='dense_domain_logit')(dp_fc0)
+    out.append(domain_logits)
+    loss.append(binary_crossentropy)
+
+    model = keras.models.Model(inp_0, out)
     model.summary()
+    '''
     model.compile(
         optimizer=keras.optimizers.Adadelta(
             lr = 0.1,
@@ -163,12 +167,47 @@ def train_model(args):
         loss=loss,
         # metrics=[mse]
     )
+    '''
+    sess = tf.Session()
+    K.set_session(sess)
+    
+    x_batch = tf.placeholder(tf.float32, [args.batch, 224, 224, 3])
+    y_batch = [
+        tf.placeholder(tf.float32, [args.batch, 12]),
+        tf.placeholder(tf.float32, [args.batch, 5]),
+        tf.placeholder(tf.float32, [args.batch, 2])]
+    y_predictions = model(x_batch)
+    loss_disfa = mse(y_batch[0], y_predictions[0])
+    loss_fera = mse(y_batch[1], y_predictions[1])
+    loss_domain = tf.nn.softmax_cross_entropy_with_logits(
+        logits=y_predictions[2], labels=y_batch[2])
+    loss = tf.reduce_mean(loss_disfa + loss_fera + loss_domain)
+    
+    lr = tf.placeholder(tf.float32, shape=(), name="learning_rate")
+    optimizer = tf.train.AdamOptimizer(learning_rate=lr).minimize(loss)
+    init = tf.global_variables_initializer()
+    sess.run(init)
+    for e in tqdm(range(args.epochs)):
+        for s in tqdm(range(args.steps_per_epoch)):
+            X_batch, Y_batch = next(GEN_TR_na)            
+            feed_dict = {
+                x_batch: X_batch[0],
+                y_batch[0]: Y_batch[0],
+                y_batch[1]: Y_batch[1],
+                y_batch[2]: Y_batch[2],
+                K.learning_phase(): 1,
+                lr: 1e-3
+            }
+            _, l = sess.run([optimizer, loss], feed_dict)
+    
+    sys.exit()
 
+    '''
     model.fit_generator(
         generator = GEN_TR_na, 
         steps_per_epoch = args.steps_per_epoch,
         epochs = args.epochs, 
-        max_queue_size = 100,
+        max_q_size = 100,
         validation_data = GEN_TE_na,
         validation_steps = 100,
         callbacks=[
@@ -180,5 +219,6 @@ def train_model(args):
             keras.callbacks.TensorBoard(log_dir=args.log_dir + '/Graph',
                                         write_graph=True)]
             )
+    '''
 
     return model, pip
