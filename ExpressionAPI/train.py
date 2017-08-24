@@ -193,6 +193,7 @@ def train_model(args):
                 y_domain: Y_batch[-1]}
             feed_dict.update(
                 {y_predictions[i]: Y_batch[i] for i in range(n_domains)})
+            K.set_value(model.get_layer('gradient_reversal_1').hp_lambda, 0.000001)
             _, l = sess.run([optimizer, loss], feed_dict)
     
     sys.exit()
