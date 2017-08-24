@@ -195,6 +195,15 @@ def train_model(args):
                 {y_predictions[i]: Y_batch[i] for i in range(n_domains)})
             K.set_value(model.get_layer('gradient_reversal_1').hp_lambda, 0.000001)
             _, l = sess.run([optimizer, loss], feed_dict)
+            
+            
+            #InvalidArgumentError (see above for traceback): Shape [-1,224,224,3] has negative dimensions
+            '''
+            update_ops = []
+            for old_value, new_value in zip(model.updates[0::2], model.updates[1::2]):
+                update_ops.append(tf.assign(old_value, new_value))
+            import ipdb; ipdb.set_trace()
+            '''
     
     sys.exit()
 
