@@ -10,3 +10,4 @@ ExpressionAPI/models/ResNet50_aug_1.1/Graph/
 *.swo
 ExpressionAPI/models/*
 *.pkl
+test/*

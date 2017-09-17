@@ -4,6 +4,16 @@ from .evaluate import print_summary
 import numpy as np
 import os
 
+
+class GradientReversalLambda(callbacks.Callback):
+    def __init__(self, lambda_var, max_epoch, max_step):
+        self.lambda_var = lambda_var
+        self.max_epoch = max_epoch
+        self.max_step = max_step
+        self.epoch = 0
+        self.step = 0
+
+
 class save_predictions(callbacks.Callback):
     def __init__(self, data_generator, log_dir, nb_batches=500, batch_size=10):
         '''

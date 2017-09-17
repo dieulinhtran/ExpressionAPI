@@ -1,5 +1,6 @@
 import os
 import argparse
+import ipdb
 import pickle
 import copy
 import numpy as np
@@ -47,21 +48,24 @@ def Resnet50DomainAdaptation(X, Y, weights='imagenet', dataset_names=[]):
         net = layers.Dense(y.shape[1], name="dense_{}".format(
             dataset_name))(Z)
         out.append(net)
+        loss.append(mse)
 
     # domain loss
     # Flip the gradient when backpropagating through this operation
-    grl = GradientReversal(1.0)
+    grl = GradientReversal(1.0, name='gradient_reversal')
     feat = grl(Z)
     dp_fc0 = layers.Dense(100, activation='relu', name='dense_domain_relu',
                           kernel_initializer='glorot_normal')(feat)
     domain_logits = layers.Dense(len(Y) - 1, activation='linear',
                           kernel_initializer='glorot_normal',
                           name='dense_domain_logit')(dp_fc0)
-    out.append(domain_logits)
+    domain_softmax = layers.Activation('softmax')(domain_logits)
+    out.append(domain_softmax)
+    loss.append(K.categorical_crossentropy)
 
     # initialize model
     model = keras.models.Model(inp_0, out)
-    return model
+    return model, loss
 
 
 def data_provider(list_dat, aug, pip):
@@ -158,55 +162,36 @@ def train_model(args):
     # initialize model
     X, Y = next(GEN_TR_a)
     dataset_names = [d[0] for d in datasets_batch_padding]
-    model = Resnet50DomainAdaptation(X, Y, dataset_names=dataset_names)
+    model, loss  = Resnet50DomainAdaptation(X, Y, dataset_names=dataset_names)
     model.summary()
-
-    # define loss and optimizer
-    n_domains = len(Y) - 1
-    x_in = tf.placeholder(tf.float32, list(X.shape))
-    y_predictions = [tf.placeholder(
-        tf.float32, [args.batch, y.shape[1]]) for y in Y[:-1]]
-    y_domain = tf.placeholder(tf.float32, [args.batch, Y[-1].shape[1]])
-    y_predictions = model(x_in)
-    prediction_losses = [mse(y_predictions[i], y_predictions[i])
-                         for i in range(n_domains)]
-    domain_loss = tf.nn.softmax_cross_entropy_with_logits(
-        logits=y_predictions[-1], labels=y_domain)
-    loss = tf.reduce_mean(tf.add_n(prediction_losses) + domain_loss)
-    lr = tf.placeholder(tf.float32, shape=(), name="learning_rate")
-    optimizer = tf.train.AdamOptimizer(learning_rate=lr).minimize(loss)
-
-    # initialize variables and session
-    init = tf.global_variables_initializer()
-    sess = tf.Session()
-    K.set_session(sess)
-    sess.run(init)
-
-    # training 
+    optimizer = keras.optimizers.SGD(
+        lr = 1.,
+        momentum = 0.9)
+    model.compile(
+        optimizer= optimizer, 
+        loss=loss 
+    )
+    num_steps = args.epochs * args.steps_per_epoch
     for e in range(args.epochs):
         for s in trange(args.steps_per_epoch, desc="Epoch {}".format(e)):
+            # set adaptive gradient reversal regularizer
+            i = (e + 1) * s
+            lmda = 10.
+            p = float(i) / num_steps
+            l = 2. / (1. + np.exp(- lmda * p)) - 1
+            K.set_value(
+                model.get_layer('gradient_reversal').hp_lambda, l)
+            # set adaptive learning rate
+            learning_rate_init = 0.01
+            alpha = 10.
+            beta = 0.75
+            lr = learning_rate_init / (1. + alpha * p)**beta
+            K.set_value(optimizer.lr, lr)
+            # get batch and test
             X_batch, Y_batch = next(GEN_TR_na)            
-            feed_dict = {
-                x_in: X_batch,
-                K.learning_phase(): 1,
-                lr: 1e-3,
-                y_domain: Y_batch[-1]}
-            feed_dict.update(
-                {y_predictions[i]: Y_batch[i] for i in range(n_domains)})
-            K.set_value(model.get_layer('gradient_reversal_1').hp_lambda, 0.000001)
-            _, l = sess.run([optimizer, loss], feed_dict)
-            
-            
-            #InvalidArgumentError (see above for traceback): Shape [-1,224,224,3] has negative dimensions
-            '''
-            update_ops = []
-            for old_value, new_value in zip(model.updates[0::2], model.updates[1::2]):
-                update_ops.append(tf.assign(old_value, new_value))
-            import ipdb; ipdb.set_trace()
-            '''
-    
-    sys.exit()
+            loss = model.train_on_batch(X_batch, Y_batch)
 
+    
     '''
     model.fit_generator(
         generator = GEN_TR_na, 
